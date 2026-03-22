@@ -71,6 +71,14 @@ namespace cupl
 		{
 			friend cupl::sliced_span<T>;
 
+			template <typename U, typename OutIter>
+			friend constexpr OutIter copy
+			(
+				sliced_span_iterator<U> begin,
+				sliced_span_iterator<U> end,
+				OutIter destination
+			);
+
 			template <typename U>
 			friend constexpr sliced_span_iterator<U> copy
 			(
