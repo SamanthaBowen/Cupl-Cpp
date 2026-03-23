@@ -2,6 +2,9 @@
 #define cupl_registries_registration_hpp
 
 #include <memory>
+#include <optional>
+#include <utility>
+#include <vector>
 
 namespace cupl
 {
@@ -17,6 +20,7 @@ namespace cupl
 		{
 			public:
 				virtual void detach_copy() const = 0;
+				virtual registration<void> aggregate(std::vector<registration<void>> registrations) const = 0;
 		};
 
 		template <typename T>
@@ -27,6 +31,7 @@ namespace cupl
 				registration_typeerased_impl(registration<T> registration);
 
 				virtual void detach_copy() const override final;
+				virtual registration<void> aggregate(std::vector<registration<void>> registrations) const override final;
 			private:
 				registration<T> mRegistration;
 		};
@@ -41,8 +46,17 @@ namespace cupl
 		public:
 			constexpr registration() noexcept = default;
 
+			registration(const registration<void>& other);
+			registration(registration<void>&& other);
+
 			template <typename T>
 			registration(registration<T> other);
+
+			template <typename... SubregistrationKeys>
+			registration(registration<void> mainRegistration, registration<SubregistrationKeys>... subregistrations);
+
+			registration &operator =(const registration &rhs);
+			registration &operator =(registration &&rhs);
 
 			void reset() noexcept;
 			void detach_copy() const;
@@ -81,6 +95,11 @@ namespace cupl
 				This will reset other.
 			*/
 			registration(registration &&other);
+
+			registration(registration<Key> mainRegistration, std::vector<registration<void>> subregistrations);
+
+			template <typename... SubregistrationKeys>
+			registration(registration<Key> mainRegistration, registration<SubregistrationKeys>... subregistrations);
 
 			/*!
 				\brief Destruct
@@ -123,6 +142,7 @@ namespace cupl
 			std::optional<Key> mKey;
 
 			registration(std::shared_ptr<detail::registry_impl<Key, void>> registry, const Key& key);
+			registration(const Key& key, std::vector<registration<void>> registrations);
 	};
 
 	template <typename Key>
@@ -138,12 +158,12 @@ namespace cupl
 		mKey(other.mKey)
 	{
 		if (auto registry = mRegistry.lock())
-			registry.increment(*mKey);
+			registry->increment(*mKey);
 	}
 
 	template <typename Key>
 	inline registration<Key>::registration(registration &&other) :
-		mRegistry(std::exchange(other.mRegistry, nullptr)),
+		mRegistry(std::exchange(other.mRegistry, std::weak_ptr<detail::registry_impl<Key, void>>())),
 		mKey(std::exchange(other.mKey, std::nullopt))
 	{
 	}
@@ -176,7 +196,7 @@ namespace cupl
 		if (auto registry = mRegistry.lock())
 			registry->decrement(*mKey);
 
-		mRegistry = std::exchange(rhs.mRegistry, nullptr);
+		mRegistry = std::exchange(rhs.mRegistry, std::weak_ptr<detail::registry_impl<Key, void>>());
 		mKey = std::exchange(rhs.mKey, std::nullopt);
 
 		return *this;
@@ -193,6 +213,12 @@ namespace cupl
 	}
 
 	template <typename Key>
+	inline const Key& registration<Key>::get_key() const
+	{
+		return mKey.value();
+	}
+
+	template <typename Key>
 	inline void registration<Key>::detach_copy() const
 	{
 		if (const auto registry = mRegistry.lock())
@@ -205,8 +231,114 @@ namespace cupl
 		mRegistry.reset();
 		mKey.reset();
 	}
+
+	inline registration<void>::registration(const registration<void>& other) :
+		typeErased(other.typeErased)
+	{
+	}
+
+	inline registration<void>::registration(registration<void>&& other) :
+		typeErased(std::move(other.typeErased))
+	{
+	}
+
+	template <typename T>
+	inline registration<void>::registration(registration<T> other) :
+		typeErased(std::make_shared<detail::registration_typeerased_impl<T>>(std::move(other)))
+	{
+	}
+
+	inline registration<void> &registration<void>::operator =(const registration &rhs)
+	{
+		typeErased = rhs.typeErased;
+
+		return *this;
+	}
+
+	inline registration<void> &registration<void>::operator =(registration &&rhs)
+	{
+		typeErased = std::exchange(rhs.typeErased, nullptr);
+
+		return *this;
+	}
+
+	inline void registration<void>::reset() noexcept
+	{
+		typeErased.reset();
+	}
+
+	inline void registration<void>::detach_copy() const
+	{
+		if (typeErased)
+			typeErased->detach_copy();
+	}
+
+	inline void registration<void>::detach()
+	{
+		detach_copy();
+		reset();
+	}
 }
 
 #include "detail/registry_impl.hpp"
+#include "detail/aggregate_registry.hpp"
+
+namespace cupl
+{
+	template <typename Key>
+	inline registration<Key>::registration(registration<Key> mainRegistration, std::vector<registration<void>> subregistrations)
+	{
+		mKey = mainRegistration.get_key();
+
+		auto registrations = std::move(subregistrations);
+		registrations.insert(registrations.begin(), std::move(mainRegistration));
+
+		auto registry = std::shared_ptr<detail::aggregate_registry<Key>>(new detail::aggregate_registry<Key>(std::move(registrations)));
+		registry->initial_increment();
+
+		mRegistry = registry;
+	}
+
+	template <typename Key>
+	template <typename... SubregistrationKeys>
+	inline registration<Key>::registration(registration<Key> mainRegistration, registration<SubregistrationKeys>... subregistrations) :
+		registration(mainRegistration.mKey.value(), { mainRegistration, subregistrations... })
+	{
+	}
+
+	template <typename Key>
+	inline registration<Key>::registration(const Key& key, std::vector<registration<void>> registrations)
+	{
+		mKey = key;
+		auto registry = std::shared_ptr<detail::aggregate_registry<Key>>(new detail::aggregate_registry<Key>(std::move(registrations)));
+		registry->initial_increment();
+
+		mRegistry = registry;
+	}
+
+	template <typename... SubregistrationKeys>
+	inline registration<void>::registration(registration<void> mainRegistration, registration<SubregistrationKeys>... subregistrations) :
+		registration(mainRegistration.typeErased->aggregate({ mainRegistration, subregistrations... }))
+	{
+	}
+
+	template <typename T>
+	inline detail::registration_typeerased_impl<T>::registration_typeerased_impl(registration<T> registration) :
+		mRegistration(std::move(registration))
+	{
+	}
+
+	template <typename T>
+	inline void detail::registration_typeerased_impl<T>::detach_copy() const
+	{
+		mRegistration.detach_copy();
+	}
+
+	template <typename T>
+	inline registration<void> detail::registration_typeerased_impl<T>::aggregate(std::vector<registration<void>> registrations) const
+	{
+		return registration<T>(mRegistration.get_key(), std::move(registrations));
+	}
+}
 
 #endif

@@ -31,9 +31,9 @@ namespace cupl
 		public registry_impl<Key, void>
 		{
 			protected:
-				registration<Key> insert(const Key &key, const T& mapped);
+				registration<Key> insert(const Key &key, T&& mapped);
 			private:
-				virtual void increment(const Key &key, const T& mapped) = 0;
+				virtual void increment(const Key &key, T&& mapped) = 0;
 		};
 
 		template <typename Key>
@@ -44,9 +44,9 @@ namespace cupl
 		}
 
 		template <typename Key, typename T>
-		inline registration<Key> detail::registry_impl<Key, T>::insert(const Key &key, const T& mapped)
+		inline registration<Key> detail::registry_impl<Key, T>::insert(const Key &key, T&& mapped)
 		{
-			increment(key, mapped);
+			increment(key, std::move(mapped));
 			return registration<Key>(std::enable_shared_from_this<registry_impl<Key>>::shared_from_this(), key);
 		}
 	}
